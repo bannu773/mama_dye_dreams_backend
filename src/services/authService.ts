@@ -10,7 +10,6 @@ import {
   ConfirmSignUpCommand,
   SignUpCommand,
   GlobalSignOutCommand,
-  CreateSecretHash,
 } from '@aws-sdk/client-cognito-identity-provider';
 import { cognitoClient, cognitoConfig } from '../config/cognito.js';
 import crypto from 'crypto';
@@ -31,16 +30,24 @@ function generateSecretHash(username: string): string {
 /**
  * User sign up
  */
-export async function signUp(email: string, password: string, name: string) {
+export async function signUp(email: string, password: string, name: string, phoneNumber?: string) {
+  const userAttributes = [
+    { Name: 'email', Value: email },
+    { Name: 'name', Value: name },
+  ];
+  
+  // Add phone number if provided (Cognito requires +country format, e.g., +919876543210)
+  if (phoneNumber) {
+    // Ensure phone number is in E.164 format (+[country code][number])
+    const formattedPhone = phoneNumber.startsWith('+') ? phoneNumber : `+91${phoneNumber.replace(/\D/g, '')}`;
+    userAttributes.push({ Name: 'phone_number', Value: formattedPhone });
+  }
+
   const params = {
     ClientId: cognitoConfig.clientId,
     Username: email,
     Password: password,
-    UserAttributes: [
-      { Name: 'email', Value: email },
-      { Name: 'name', Value: name },
-      { Name: 'email_verified', Value: 'false' },
-    ],
+    UserAttributes: userAttributes,
     ...(cognitoConfig.clientSecret && {
       SecretHash: generateSecretHash(email),
     }),
@@ -158,12 +165,13 @@ export async function getUserDetails(email: string) {
     
     const emailAttr = response.UserAttributes?.find(attr => attr.Name === 'email');
     const nameAttr = response.UserAttributes?.find(attr => attr.Name === 'name');
+    const subAttr = response.UserAttributes?.find(attr => attr.Name === 'sub');
     const emailValue = emailAttr?.Value || email;
     
     return {
       email: emailValue,
       username: response.Username,
-      userId: response.UserSub,
+      userId: subAttr?.Value || response.Username,
       isAdmin: emailValue === cognitoConfig.adminEmail,
       emailVerified: response.UserStatus === 'CONFIRMED',
       name: nameAttr?.Value || '',
