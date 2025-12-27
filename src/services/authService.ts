@@ -1,66 +1,62 @@
-import {
-  AdminInitiateAuthCommand,
-  AdminCreateUserCommand,
-  AdminSetUserPasswordCommand,
-  AdminConfirmSignUpCommand,
-  AdminGetUserCommand,
-  AdminDeleteUserCommand,
-  InitiateAuthCommand,
-  RespondToAuthChallengeCommand,
-  ConfirmSignUpCommand,
-  SignUpCommand,
-  GlobalSignOutCommand,
-} from '@aws-sdk/client-cognito-identity-provider';
-import { cognitoClient, cognitoConfig } from '../config/cognito.js';
 import crypto from 'crypto';
+import jwt from 'jsonwebtoken';
+import { User } from '../models/User.js';
+
+const JWT_SECRET = process.env.JWT_SECRET || 'mama-dye-dreams-secret-key-change-in-prod';
+const JWT_EXPIRES_IN = '30d'; // Long lived token (30 days) since we removed refresh token
 
 /**
- * Generate secret hash for Cognito authentication
+ * Generate hash and salt for password
  */
-function generateSecretHash(username: string): string {
-  if (!cognitoConfig.clientSecret) {
-    throw new Error('COGNITO_CLIENT_SECRET is not configured');
-  }
-  return crypto
-    .createHmac('SHA256', cognitoConfig.clientSecret)
-    .update(username + cognitoConfig.clientId)
-    .digest('base64');
+function hashPassword(password: string): { hash: string; salt: string } {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.pbkdf2Sync(password, salt, 1000, 64, 'sha512').toString('hex');
+  return { hash, salt };
+}
+
+/**
+ * Verify password against hash and salt
+ */
+function verifyPassword(password: string, hash: string, salt: string): boolean {
+  const verifyHash = crypto.pbkdf2Sync(password, salt, 1000, 64, 'sha512').toString('hex');
+  return hash === verifyHash;
 }
 
 /**
  * User sign up
  */
 export async function signUp(email: string, password: string, name: string, phoneNumber?: string) {
-  const userAttributes = [
-    { Name: 'email', Value: email },
-    { Name: 'name', Value: name },
-  ];
-  
-  // Add phone number if provided (Cognito requires +country format, e.g., +919876543210)
-  if (phoneNumber) {
-    // Ensure phone number is in E.164 format (+[country code][number])
-    const formattedPhone = phoneNumber.startsWith('+') ? phoneNumber : `+91${phoneNumber.replace(/\D/g, '')}`;
-    userAttributes.push({ Name: 'phone_number', Value: formattedPhone });
-  }
-
-  const params = {
-    ClientId: cognitoConfig.clientId,
-    Username: email,
-    Password: password,
-    UserAttributes: userAttributes,
-    ...(cognitoConfig.clientSecret && {
-      SecretHash: generateSecretHash(email),
-    }),
-  };
-
   try {
-    const command = new SignUpCommand(params);
-    const response = await cognitoClient.send(command);
-    
+    const existingUser = await User.findOne({ email: email.toLowerCase() });
+
+    if (existingUser) {
+      throw new Error('User with this email already exists');
+    }
+
+    const { hash, salt } = hashPassword(password);
+
+    const user = new User({
+      email: email.toLowerCase(),
+      name,
+      phone: phoneNumber,
+      password: hash,
+      salt: salt,
+      isEmailVerified: true, // Auto-verify for simplicity as requested
+      role: email.toLowerCase() === process.env.ADMIN_EMAIL?.toLowerCase() ? 'admin' : 'customer',
+      addresses: []
+    });
+
+    await user.save();
+
     return {
       success: true,
-      userId: response.UserSub,
-      requiresConfirmation: response.CodeDeliveryDetails !== undefined,
+      requiresConfirmation: false,
+      user: {
+        _id: user._id,
+        email: user.email,
+        name: user.name,
+        role: user.role
+      }
     };
   } catch (error: any) {
     console.error('Sign up error:', error);
@@ -69,128 +65,72 @@ export async function signUp(email: string, password: string, name: string, phon
 }
 
 /**
- * Confirm sign up with verification code
- */
-export async function confirmSignUp(email: string, code: string) {
-  const params = {
-    ClientId: cognitoConfig.clientId,
-    Username: email,
-    ConfirmationCode: code,
-    ...(cognitoConfig.clientSecret && {
-      SecretHash: generateSecretHash(email),
-    }),
-  };
-
-  try {
-    const command = new ConfirmSignUpCommand(params);
-    await cognitoClient.send(command);
-    return { success: true };
-  } catch (error: any) {
-    console.error('Confirm sign up error:', error);
-    throw new Error(error.message || 'Failed to verify email');
-  }
-}
-
-/**
  * User sign in
  */
 export async function signIn(email: string, password: string) {
-  const authParams: any = {
-    AuthFlow: 'USER_PASSWORD_AUTH',
-    ClientId: cognitoConfig.clientId,
-    AuthParameters: {
-      USERNAME: email,
-      PASSWORD: password,
-      ...(cognitoConfig.clientSecret && {
-        SECRET_HASH: generateSecretHash(email),
-      }),
-    },
-  };
-
   try {
-    const command = new InitiateAuthCommand(authParams);
-    const response = await cognitoClient.send(command);
+    const user = await User.findOne({ email: email.toLowerCase() }).select('+password +salt');
 
-    if (response.ChallengeName === 'NEW_PASSWORD_REQUIRED') {
-      return {
-        success: false,
-        challenge: 'NEW_PASSWORD_REQUIRED',
-        session: response.Session,
-      };
+    if (!user) {
+      throw new Error('Invalid email or password');
     }
 
-    if (response.AuthenticationResult) {
-      // Get user details to check if admin
-      const userDetails = await getUserDetails(email);
-      
-      return {
-        success: true,
-        accessToken: response.AuthenticationResult.AccessToken,
-        idToken: response.AuthenticationResult.IdToken,
-        refreshToken: response.AuthenticationResult.RefreshToken,
-        expiresIn: response.AuthenticationResult.ExpiresIn,
-        user: userDetails,
-      };
+    // Check if user has password (might be old Cognito user)
+    if (!user.password || !user.salt) {
+      throw new Error('Please reset your password to login');
     }
 
-    throw new Error('Authentication failed');
-  } catch (error: any) {
-    console.error('Sign in error:', error);
-    
-    // Handle specific error types
-    if (error.name === 'NotAuthorizedException') {
-      throw new Error('Incorrect email or password');
-    } else if (error.name === 'UserNotConfirmedException') {
-      throw new Error('Please verify your email address first');
-    } else if (error.name === 'UserNotFoundException') {
-      throw new Error('User not found');
+    const isValid = verifyPassword(password, user.password, user.salt);
+
+    if (!isValid) {
+      throw new Error('Invalid email or password');
     }
-    
-    throw new Error(error.message || 'Authentication failed');
-  }
-}
 
-/**
- * Get user details from Cognito
- */
-export async function getUserDetails(email: string) {
-  const params = {
-    UserPoolId: cognitoConfig.userPoolId,
-    Username: email,
-  };
+    // Generate JWT
+    const token = jwt.sign(
+      {
+        userId: user._id,
+        email: user.email,
+        role: user.role,
+        isAdmin: user.role === 'admin'
+      },
+      JWT_SECRET,
+      { expiresIn: JWT_EXPIRES_IN }
+    );
 
-  try {
-    const command = new AdminGetUserCommand(params);
-    const response = await cognitoClient.send(command);
-    
-    const emailAttr = response.UserAttributes?.find(attr => attr.Name === 'email');
-    const nameAttr = response.UserAttributes?.find(attr => attr.Name === 'name');
-    const subAttr = response.UserAttributes?.find(attr => attr.Name === 'sub');
-    const emailValue = emailAttr?.Value || email;
-    
+    // Return user without sensitive data
+    const userObj = user.toObject();
+    delete userObj.password;
+    delete userObj.salt;
+
     return {
-      email: emailValue,
-      username: response.Username,
-      userId: subAttr?.Value || response.Username,
-      isAdmin: emailValue === cognitoConfig.adminEmail,
-      emailVerified: response.UserStatus === 'CONFIRMED',
-      name: nameAttr?.Value || '',
+      success: true,
+      accessToken: token,
+      user: {
+        ...userObj,
+        userId: user._id.toString(), // Keep compatibility with frontend expecting userId
+        isAdmin: user.role === 'admin'
+      },
+      expiresIn: 30 * 24 * 60 * 60 // 30 days in seconds
     };
   } catch (error: any) {
-    console.error('Get user details error:', error);
-    throw new Error('Failed to fetch user details');
+    console.error('Sign in error:', error);
+    throw new Error(error.message || 'Authentication failed');
   }
 }
 
 /**
  * Verify access token and get user info
  */
-export async function verifyToken(accessToken: string) {
+export async function verifyToken(token: string) {
   try {
-    // Decode the JWT token to extract username
-    // In production, you should verify the signature properly using Cognito's JWKs
-    const userDetails = await getUserDetailsFromToken(accessToken);
-    return userDetails;
+    const decoded = jwt.verify(token, JWT_SECRET) as any;
+    return {
+      userId: decoded.userId,
+      email: decoded.email,
+      role: decoded.role,
+      isAdmin: decoded.isAdmin
+    };
   } catch (error: any) {
     console.error('Verify token error:', error);
     throw new Error('Invalid or expired token');
@@ -198,81 +138,30 @@ export async function verifyToken(accessToken: string) {
 }
 
 /**
- * Get user details from access token
+ * Get user details (wrapper for consistency)
  */
-async function getUserDetailsFromToken(accessToken: string) {
-  // Decode the JWT token to extract username
-  // In production, verify the signature properly using Cognito's JWKs
-  try {
-    const tokenParts = accessToken.split('.');
-    if (tokenParts.length !== 3) {
-      throw new Error('Invalid token format');
-    }
-    
-    const payload = JSON.parse(Buffer.from(tokenParts[1], 'base64').toString());
-    // Extract username from token - Cognito stores it in different places
-    const username = payload['cognito:username'] || payload.username || payload.sub || payload.email;
-    
-    if (!username) {
-      throw new Error('Username not found in token');
-    }
-    
-    // Get user details from Cognito
-    return await getUserDetails(username);
-  } catch (error: any) {
-    console.error('Get user from token error:', error);
-    throw new Error('Failed to extract user from token');
+export async function getUserDetails(email: string) {
+  const user = await User.findOne({ email: email.toLowerCase() });
+  if (!user) {
+    throw new Error('User not found');
   }
+  return {
+    email: user.email,
+    userId: user._id.toString(),
+    name: user.name,
+    role: user.role,
+    isAdmin: user.role === 'admin',
+    phone: user.phone,
+    addresses: user.addresses,
+    isEmailVerified: user.isEmailVerified
+  };
 }
 
 /**
- * Sign out user
+ * Sign out (placeholder as JWT is stateless, but we can handle cleanup if needed)
  */
 export async function signOut(accessToken: string) {
-  try {
-    const command = new GlobalSignOutCommand({
-      AccessToken: accessToken,
-    });
-    await cognitoClient.send(command);
-    return { success: true };
-  } catch (error: any) {
-    console.error('Sign out error:', error);
-    throw new Error('Failed to sign out');
-  }
+  // In a stateless JWT system, we can't really invalidate the token server-side 
+  // without a blacklist/redis. For now, we just return success.
+  return { success: true };
 }
-
-/**
- * Refresh access token
- */
-export async function refreshToken(refreshToken: string, username: string) {
-  const params: any = {
-    AuthFlow: 'REFRESH_TOKEN_AUTH',
-    ClientId: cognitoConfig.clientId,
-    AuthParameters: {
-      REFRESH_TOKEN: refreshToken,
-      ...(cognitoConfig.clientSecret && {
-        SECRET_HASH: generateSecretHash(username),
-      }),
-    },
-  };
-
-  try {
-    const command = new InitiateAuthCommand(params);
-    const response = await cognitoClient.send(command);
-
-    if (response.AuthenticationResult) {
-      return {
-        success: true,
-        accessToken: response.AuthenticationResult.AccessToken,
-        idToken: response.AuthenticationResult.IdToken,
-        expiresIn: response.AuthenticationResult.ExpiresIn,
-      };
-    }
-
-    throw new Error('Token refresh failed');
-  } catch (error: any) {
-    console.error('Refresh token error:', error);
-    throw new Error('Failed to refresh token');
-  }
-}
-

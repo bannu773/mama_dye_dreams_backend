@@ -104,13 +104,15 @@ app.use((req, res) => {
   });
 });
 
-// Start server
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🔗 CORS enabled for: ${CORS_ORIGIN}`);
-  console.log(`✨ API endpoints available at http://localhost:${PORT}/api`);
-});
+// Start server only if run directly (not imported by Lambda handler)
+if (import.meta.url === `file://${process.argv[1]}`) {
+  app.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`🔗 CORS enabled for: ${CORS_ORIGIN}`);
+    console.log(`✨ API endpoints available at http://localhost:${PORT}/api`);
+  });
+}
 
 export default app;
 

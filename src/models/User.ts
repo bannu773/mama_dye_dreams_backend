@@ -13,8 +13,10 @@ export interface IAddress {
 }
 
 export interface IUser extends Document {
-  cognitoId: string;
+  cognitoId?: string;
   email: string;
+  password?: string;
+  salt?: string;
   name: string;
   phone?: string;
   addresses: IAddress[];
@@ -25,10 +27,10 @@ export interface IUser extends Document {
 }
 
 const addressSchema = new Schema<IAddress>({
-  type: { 
-    type: String, 
-    enum: ['shipping', 'billing'], 
-    required: true 
+  type: {
+    type: String,
+    enum: ['shipping', 'billing'],
+    required: true
   },
   fullName: { type: String, required: true },
   phone: { type: String, required: true },
@@ -42,41 +44,49 @@ const addressSchema = new Schema<IAddress>({
 
 const userSchema = new Schema<IUser>(
   {
-    cognitoId: { 
-      type: String, 
-      required: true, 
+    cognitoId: {
+      type: String,
       unique: true,
-      index: true 
+      sparse: true, // Allows null/undefined to be unique
+      index: true
     },
-    email: { 
-      type: String, 
-      required: true, 
-      unique: true, 
+    email: {
+      type: String,
+      required: true,
+      unique: true,
       lowercase: true,
       trim: true,
-      index: true 
+      index: true
     },
-    name: { 
-      type: String, 
-      required: true,
-      trim: true 
-    },
-    phone: { 
+    password: {
       type: String,
-      trim: true 
+      select: false
+    },
+    salt: {
+      type: String,
+      select: false
+    },
+    name: {
+      type: String,
+      required: true,
+      trim: true
+    },
+    phone: {
+      type: String,
+      trim: true
     },
     addresses: [addressSchema],
-    role: { 
-      type: String, 
-      enum: ['customer', 'admin'], 
-      default: 'customer' 
+    role: {
+      type: String,
+      enum: ['customer', 'admin'],
+      default: 'customer'
     },
-    isEmailVerified: { 
-      type: Boolean, 
-      default: false 
+    isEmailVerified: {
+      type: Boolean,
+      default: false
     },
   },
-  { 
+  {
     timestamps: true,
     collection: 'users'
   }
