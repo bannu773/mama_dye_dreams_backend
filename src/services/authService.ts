@@ -108,7 +108,7 @@ export async function signIn(email: string, password: string) {
       accessToken: token,
       user: {
         ...userObj,
-        userId: user._id.toString(), // Keep compatibility with frontend expecting userId
+        userId: (user._id as any).toString(), // Keep compatibility with frontend expecting userId
         isAdmin: user.role === 'admin'
       },
       expiresIn: 30 * 24 * 60 * 60 // 30 days in seconds
@@ -147,7 +147,7 @@ export async function getUserDetails(email: string) {
   }
   return {
     email: user.email,
-    userId: user._id.toString(),
+    userId: (user._id as any).toString(),
     name: user.name,
     role: user.role,
     isAdmin: user.role === 'admin',

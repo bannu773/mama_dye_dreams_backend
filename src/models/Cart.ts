@@ -37,61 +37,61 @@ export interface ICart extends Document {
 }
 
 const cartItemSchema = new Schema<ICartItem>({
-  product: { 
-    type: Schema.Types.ObjectId, 
-    ref: 'Product', 
-    required: true 
+  product: {
+    type: Schema.Types.ObjectId,
+    ref: 'Product',
+    required: true
   },
-  color: { 
-    type: String, 
-    required: true 
+  color: {
+    type: String,
+    required: true
   },
-  size: { 
-    type: String, 
-    required: true 
+  size: {
+    type: String,
+    required: true
   },
-  quantity: { 
-    type: Number, 
-    required: true, 
+  quantity: {
+    type: Number,
+    required: true,
     min: 1,
     default: 1
   },
-  price: { 
-    type: Number, 
-    required: true, 
-    min: 0 
+  price: {
+    type: Number,
+    required: true,
+    min: 0
   },
 });
 
 const cartSchema = new Schema<ICart>(
   {
-    user: { 
-      type: Schema.Types.ObjectId, 
-      ref: 'User', 
-      required: true, 
+    user: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
       unique: true,
-      index: true 
+      index: true
     },
     items: [cartItemSchema],
   },
-  { 
+  {
     timestamps: true,
     collection: 'carts'
   }
 );
 
 // Virtual for total items count
-cartSchema.virtual('itemCount').get(function() {
+cartSchema.virtual('itemCount').get(function () {
   return this.items.reduce((total, item) => total + item.quantity, 0);
 });
 
 // Virtual for subtotal
-cartSchema.virtual('subtotal').get(function() {
+cartSchema.virtual('subtotal').get(function () {
   return this.items.reduce((total, item) => total + (item.price * item.quantity), 0);
 });
 
 // Method to add item to cart
-cartSchema.methods.addItem = function(
+cartSchema.methods.addItem = function (
   productId: mongoose.Types.ObjectId,
   color: string,
   size: string,
@@ -99,7 +99,7 @@ cartSchema.methods.addItem = function(
   price: number
 ) {
   const existingItemIndex = this.items.findIndex(
-    item => 
+    (item: ICartItem) =>
       item.product.toString() === productId.toString() &&
       item.color === color &&
       item.size === size
@@ -123,14 +123,14 @@ cartSchema.methods.addItem = function(
 };
 
 // Method to update item quantity
-cartSchema.methods.updateItemQuantity = function(
+cartSchema.methods.updateItemQuantity = function (
   productId: mongoose.Types.ObjectId,
   color: string,
   size: string,
   quantity: number
 ) {
   const itemIndex = this.items.findIndex(
-    item => 
+    (item: ICartItem) =>
       item.product.toString() === productId.toString() &&
       item.color === color &&
       item.size === size
@@ -149,13 +149,13 @@ cartSchema.methods.updateItemQuantity = function(
 };
 
 // Method to remove item from cart
-cartSchema.methods.removeItem = function(
+cartSchema.methods.removeItem = function (
   productId: mongoose.Types.ObjectId,
   color: string,
   size: string
 ) {
   this.items = this.items.filter(
-    item => !(
+    (item: ICartItem) => !(
       item.product.toString() === productId.toString() &&
       item.color === color &&
       item.size === size
@@ -166,7 +166,7 @@ cartSchema.methods.removeItem = function(
 };
 
 // Method to clear cart
-cartSchema.methods.clearCart = function() {
+cartSchema.methods.clearCart = function () {
   this.items = [];
   return this.save();
 };
